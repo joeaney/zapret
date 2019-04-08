@@ -1,136 +1,117 @@
-﻿zapret v.20
+# ﻿zapret v.20
 
-Для чего это надо
+As a rule, DPI tricks do not help to bypass https blocking. What is it for?
+
 -----------------
-
-Обойти блокировки веб сайтов http.
-
-Как это работает
+Bypass the blocking of web sites http.
+How it works
 ----------------
 
-У провайдеров в DPI бывают бреши. Они случаются от того, что правила DPI пишут для
-обычных пользовательских программ, опуская все возможные случаи, допустимые по стандартам.
-Это делается для простоты и скорости. Нет смысла ловить хакеров, которых 0.01%,
-ведь все равно эти блокировки обходятся довольно просто даже обычными пользователями.
+DPI providers have gaps. They happen from what the DPI rules write for ordinary user programs, omitting all possible cases that are permissible by standards.
+This is done for simplicity and speed. It makes no sense to catch hackers, of which 0.01%, because all the same, these locks are quite simple, even by ordinary users.
 
-Некоторые DPI не могут распознать http запрос, если он разделен на TCP сегменты.
-Например, запрос вида "GET / HTTP/1.1\r\nHost: kinozal.tv......"
-мы посылаем 2 частями : сначала идет "GET ", затем "/ HTTP/1.1\r\nHost: kinozal.tv.....".
-Другие DPI спотыкаются, когда заголовок "Host:" пишется в другом регистре : например, "host:".
-Кое-где работает добавление дополнительного пробела после метода : "GET /" => "GET  /"
-или добавление точки в конце имени хоста : "Host: kinozal.tv."
+Some DPIs cannot recognize the http request if it is divided into TCP segments.  
+For example, a query like `GET / HTTP/1.1\r\nHost: kinozal.tv......`  
+we send in 2 parts: first comes `GET ", затем "/ HTTP/1.1\r\nHost: kinozal.tv.....`.  
+Other DPI stumble when heading `Host:" spelled in another case: eg, "host:`.  
+In some places, adding additional space after the method works: `GET /" => "GET  /` or adding a dot at the end of the host name: `Host: kinozal.tv.`
 
-Как это реализовать на практике в системе linux
------------------------------------------------
+## How to put this into practice in the linux system
 
-Как заставить систему разбивать запрос на части ? Можно прогнать всю TCP сессию
-через transparent proxy, а можно подменить поле tcp window size на первом входящем TCP пакете с SYN,ACK.
-Тогда клиент подумает, что сервер установил для него маленький window size и первый сегмент с данными
-отошлет не более указанной длины. В последующих пакетах мы не будем менять ничего.
-Дальнейшее поведение системы по выбору размера отсылаемых пакетов зависит от реализованного
-в ней алгоритма. Опыт показывает, что linux первый пакет всегда отсылает не более указанной
-в window size длины, остальные пакеты до некоторых пор шлет не более max(36,указанный_размер).
-После некоторого количества пакетов срабатывает механизм window scaling и начинает
-учитываться фактор скалинга, размер пакетов становится не более max(36,указанный_рамер << scale_factor).
-Не слишком изящное поведение, но поскольку на размеры входящик пакетов мы не влияем,
-а объем принимаемых по http данных обычно гораздо выше объема отсылаемых, то визуально
-появятся лишь небольшие задержки.
-Windows ведет себя в аналогичном случае гораздо более предсказуемо. Первый сегмент
-уходит указанной длины, дальше window size меняется в зависимости от значения,
-присылаемого в новых tcp пакетах. То есть скорость почти сразу же восстанавливается
-до возможного максимума.
+How to make the system break the request into parts? You can run the entire TCP session through transparent proxy, or you can replace the tcp window size field on the first incoming TCP packet with a SYN, ACK.
 
-Перехватить пакет с SYN,ACK не представляет никакой сложности средствами iptables.
-Однако, возможности редактирования пакетов в iptables сильно ограничены.
-Просто так поменять window size стандартными модулями нельзя.
-Для этого мы воспользуемся средством NFQUEUE. Это средство позволяет
-передавать пакеты на обработку процессам, работающим в user mode.
-Процесс, приняв пакет, может его изменить, что нам и нужно.
+Then the client will think that the server has set a small window size for it and the first data segment will send no more than the specified length. In subsequent packages, we will not change anything.
 
-iptables -t raw -I PREROUTING -p tcp --sport 80 --tcp-flags SYN,ACK SYN,ACK -j NFQUEUE --queue-num 200 --queue-bypass
+The further behavior of the system at the choice of the size of the sent packets depends on the algorithm implemented in it. Experience shows that linux first package always sends no more than the length specified in the window size, the rest of the packets up to some time sends no more than max (36, specified_size).
 
-Будет отдавать нужные нам пакеты процессу, слушающему на очереди с номером 200.
-Он подменит window size. PREROUTING поймает как пакеты, адресованные самому хосту,
-так и маршрутизируемые пакеты. То есть решение одинаково работает как на клиенте,
-так и на роутере. На роутере на базе PC или на базе OpenWRT.
-В принципе этого достаточно.
-Однако, при таком воздействии на TCP будет небольшая задержка.
-Чтобы не трогать хосты, которые не блокируются провайдером, можно сделать такой ход.
-Создать список заблоченых доменов или скачать его с rublacklist.
-Заресолвить все домены в ipv4 адреса. Загнать их в ipset с именем "zapret".
-Добавить в правило :
+After a certain number of packets, the window scaling mechanism is triggered and the scaling factor starts to be taken into account, the packet size becomes no more than max (36, specified_ramer << scale_factor).
 
-iptables -t raw -I PREROUTING -p tcp --sport 80 --tcp-flags SYN,ACK SYN,ACK -m set --match-set zapret src -j NFQUEUE --queue-num 200 --queue-bypass
+Not very elegant behavior, but since we do not affect the size of the incoming packet, and the amount of data received via http is usually much higher than the amount sent, then only small delays will appear visually.
 
-Таким образом воздействие будет производиться только на ip адреса, относящиеся к заблокированным сайтам.
-Список можно обновлять через cron раз в несколько дней.
-Если обновлять через rublacklist, то это займет довольно долго. Более часа. Но ресурсов
-этот процесс не отнимает, так что никаких проблем это не вызовет, особенно, если система
-работает постоянно.
+Windows behaves in a similar case much more predictably. The first segment goes the specified length, then the window size changes depending on the value sent in the new tcp packets. That is, the speed is almost immediately restored to a possible maximum.
 
-Если DPI не обходится через разделение запроса на сегменты, то иногда срабатывает изменение
-"Host:" на "host:". В этом случае нам может не понадобится замена window size, поэтому цепочка
-PREROUTING нам не нужна. Вместо нее вешаемся на исходящие пакеты в цепочке POSTROUTING :
+To intercept a packet from SYN, ACK does not represent any complexity by means of iptables.  
+However, the options for editing packages in iptables are severely limited.  
+It’s just not possible to change window size with standard modules.  
+For this, we will use the NFQUEUE tool. This tool allows packets to be processed by processes running in user mode.  
+The process, accepting a package, can change it, which is what we need.
 
-iptables -t mangle -I POSTROUTING -p tcp --dport 80 -m set --match-set zapret dst -j NFQUEUE --queue-num 200 --queue-bypass
+`iptables -t raw -I PREROUTING -p tcp --sport 80 --tcp-flags SYN,ACK SYN,ACK -j NFQUEUE --queue-num 200 --queue-bypass`
 
-В этом случае так же возможны дополнительные моменты. DPI может ловить только первый http запрос, игнорируя
-последующие запросы в keep-alive сессии. Тогда можем уменьшить нагрузку на проц, отказавшись от процессинга ненужных пакетов.
+It will give the packages we need to the process that listens on the queue with the number 200.
 
-iptables -t mangle -I POSTROUTING -p tcp --dport 80 -m connbytes --connbytes-dir=original --connbytes-mode=packets --connbytes 1:5 -m set --match-set zapret dst -j NFQUEUE --queue-num 200 --queue-bypass
+It will replace the window size. PREROUTING will catch both packets addressed to the host itself and routed packets. That is, the solution works the same way on the client and on the router. On a PC-based or OpenWRT router.
 
-Случается так, что провайдер мониторит всю HTTP сессию с keep-alive запросами. В этом случае
-недостаточно ограничивать TCP window при установлении соединения. Необходимо посылать отдельными
-TCP сегментами каждый новый запрос. Эта задача решается через полное проксирование трафика через
-transparent proxy (TPROXY или DNAT). TPROXY не работает с соединениями, исходящими с локальной системы,
-так что это решение применимо только на роутере. DNAT работает и с локальными соединениеми,
-но имеется опасность входа в бесконечную рекурсию, поэтому демон запускается под отдельным пользователем,
-и для этого пользователя отключается DNAT через "-m owner". Полное проксирование требует больше ресурсов
-процессора, чем манипуляция с исходящими пакетами без реконструкции TCP соединения.
+In principle, this is enough.  
+However, with such an impact on TCP there will be a slight delay.  
+In order not to touch the hosts that are not blocked by the provider, you can make such a move.  
+Create a list of blocked domains or download it from rublacklist.  
+Secure all domains in ipv4 addresses. To drive them into the ipset with the name "zapret".  
 
+Add to rule:
+
+`iptables -t raw -I PREROUTING -p tcp --sport 80 --tcp-flags SYN,ACK SYN,ACK -m set --match-set zapret src -j NFQUEUE --queue-num 200 --queue-bypass`
+
+Thus, the impact will be made only on ip addresses related to blocked sites.  
+The list can be updated via cron every few days.  
+If you update via rublacklist, then it will take quite a long time. More than an hour. But this process does not take away resources, so it will not cause any problems, especially if the system is constantly running.
+
+If DPI doesn’t get by with splitting a request into segments, then sometimes a change occurs.
+"Host:" on "host:". In this case, we may not need a window size replacement, so the chain PREROUTING we do not need. Instead, we hang on outgoing packets in the POSTROUTING chain:
+
+`iptables -t mangle -I POSTROUTING -p tcp --dport 80 -m set --match-set zapret dst -j NFQUEUE --queue-num 200 --queue-bypass`
+
+In this case, additional points are also possible. DPI can catch only the first http request, ignoring subsequent requests in the keep-alive session. Then we can reduce the load on the percent, abandoning the processing of unnecessary packages.
+
+`iptables -t mangle -I POSTROUTING -p tcp --dport 80 -m connbytes --connbytes-dir=original --connbytes-mode=packets --connbytes 1:5 -m set --match-set zapret dst -j NFQUEUE --queue-num 200 --queue-bypass`
+
+It happens that the provider monitors the entire HTTP session with keep-alive requests. In this case, it is not enough to restrict the TCP window when establishing a connection. You must send each new request with separate TCP segments. This task is solved through the full proxying of traffic through a transparent proxy (TPROXY or DNAT). TPROXY does not work with connections originating from the local system, so this solution is applicable only on the router. DNAT works with local connections, but there is a danger of entering into infinite recursion, so the daemon is started as a separate user, and DNAT is disabled for this user via "-m owner". Full proxying requires more processor resources than manipulating outgoing packets without reconstructing a TCP connection.
+
+`
 iptables -t nat -I PREROUTING -p tcp --dport 80 -j DNAT --to 127.0.0.1:1188
 iptables -t nat -I OUTPUT -p tcp --dport 80 -m owner ! --uid-owner tpws -j DNAT --to 127.0.0.1:1188
+`
 
-nfqws
------
+## nfqws
 
-Эта программа - модификатор пакетов и обработчик очереди NFQUEUE.
-Она берет следующие параметры :
- --daemon		; демонизировать прогу
- --qnum=200		; номер очереди
- --wsize=4		; менять tcp window size на указанный размер
- --hostcase		; менять регистр заголовка "Host:" по умолчанию на "host:".
- --hostnospace		; убрать пробел после "Host:" и переместить его в конец значения "User-Agent:" для сохранения длины пакета
- --hostspell=HoST	; точное написание заголовка Host (можно "HOST" или "HoSt"). автоматом включает --hostcase
-Параметры манипуляции могут сочетаться в любых комбинациях.
+This program is a packet modifier and a NFQUEUE queue handler.
+It takes the following parameters:
 
-tpws
------
+`
+ --daemon		: demonize prog
+ --qnum=200		: queue number
+ --wsize=4		: change tcp window size to specified size
+ --hostcase		: change the case of the "Host:" header to "host:" by default.
+ --hostnospace		: remove the space after the "Host:" and move it to the end of the value "User-Agent:" to save the packet length
+ --hostspell=HoST	: the exact spelling of the Host header (you can use "HOST" or "HoSt"). automatically includes `--hostcase` The manipulation parameters can be combined in any combination.
+`
 
-tpws - это transparent proxy.
- --bind-addr		; на каком адресе слушать. может быть ipv4 или ipv6 адрес. если не указано, то слушает на всех адресах ipv4 и ipv6
- --port=<port>		; на каком порту слушать
- --daemon               ; демонизировать прогу
- --user=<username>	; менять uid процесса
- --split-http-req=method|host	; способ разделения http запросов на сегменты : около метода (GET,POST) или около заголовка Host
- --split-pos=<offset>	; делить все посылы на сегменты в указанной позиции. Если отсыл длинее 8Kb (размер буфера приема), то будет разделен каждый блок по 8Kb.
- --hostcase             ; менять регистр заголовка "Host:". по умолчанию на "host:".
- --hostspell=HoST	; точное написание заголовка Host (можно "HOST" или "HoSt"). автоматом включает --hostcase
- --hostdot		; добавление точки после имени хоста : "Host: kinozal.tv."
- --hosttab		; добавление табуляции после имени хоста : "Host: kinozal.tv\t"
- --hostnospace		; убрать пробел после "Host:"
- --methodspace		; добавить пробел после метода : "GET /" => "GET  /"
- --methodeol		; добавить перевод строки перед методом  : "GET /" => "\r\nGET  /"
- --unixeol		; конвертировать 0D0A в 0A и использовать везде 0A
- --hostlist=<filename>  ; действовать только над доменами, входящими в список из filename. поддомены автоматически учитываются. в файле должен быть хост на каждой строке.
-			; список читается 1 раз при старте и хранится в памяти в виде иерархической структуры для быстрого поиска.
-			; для списка РКН может потребоваться система с 128 Mb памяти ! расчитывайте требование RAM для процесса как 3-5 кратный размер файла списка.
-			; по сигналу HUP список будет перечитан при следующем принятом соединении
-Параметры манипуляции могут сочетаться в любых комбинациях.
-Есть исключения : split-pos заменяет split-http-req. hostdot и hosttab взаимоисключающи.
+## tpws
 
-Провайдеры
-----------
+tpws - This is a transparent proxy.
+`
+ --bind-addr		; what address to listen to. maybe ipv4 or ipv6 address. if not specified, then listens on all ipv4 and ipv6 addresses
+ --port=<port>		; which port to listen to
+ --daemon               ; demonize prog
+ --user=<username>	; change the uid of the process
+ --split-http-req=method|host	; way to split http requests into segments: around the method (GET, POST) or around the Host header
+ --split-pos=<offset>	; divide all messages into segments in the specified position. If sending is longer than 8Kb (receive buffer size), each block will be divided by 8Kb.
+ --hostcase             ; change the case of the "Host:" header. default to "host:".
+ --hostspell=HoST	; the exact spelling of the Host header (you can use "HOST" or "HoSt"). automatically includes `--hostcase`
+ --hostdot		; Add a dot after the host name: `Host: kinozal.tv.`
+ --hosttab		; add tab after hostname: `Host: kinozal.tv \ t`
+ --hostnospace		; remove space after "Host:"
+ --methodspace		; add space after method: "GET /" => "GET  /"
+ --methodeol		; add line feed before method: "GET /" => "\r\nGET  /"
+ --unixeol		; convert 0D0A to 0A and use everywhere 0A
+ --hostlist=<filename>  ; act only on domains included in the list of filename. subdomains are automatically counted. The file must have a host on each line.
+			; The list is read once at the start and is stored in the memory in the form of a hierarchical structure for a quick search.
+			; for a list of RKN, a system with 128 Mb of memory may be required! calculate the RAM requirement for the process as 3-5 times the size of the list file.
+			; on the HUP signal, the list will be re-read with the next accepted connection. The manipulation parameters can be combined in any combination.
+There are exceptions: `split-pos` replaces `split-http-req`. hostdot and hosttab are mutually exclusive.
+`
+
+## Providers
 
 Поскольку ситуация с блокировками на отдельных провайдерах может меняться, информация может устаревать. Она дана больше для примера, чем как прямое руководство.
 Автор не занимается мониторингом и оперативным обновлением этой информации.
